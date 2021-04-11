@@ -461,13 +461,13 @@ void mp_aframe_clip_timestamps(struct mp_aframe *f, double start, double end)
     double rate = mp_aframe_get_effective_rate(f);
     if (f_end == MP_NOPTS_VALUE)
         return;
-    if (af_fmt_is_spdif(mp_aframe_get_format(f)))
-        return;
     if (end != MP_NOPTS_VALUE) {
         if (f_end >= end) {
             if (f->pts >= end) {
                 f->av_frame->nb_samples = 0;
             } else {
+                if (af_fmt_is_spdif(mp_aframe_get_format(f)))
+                    return;
                 int new = (end - f->pts) * rate;
                 f->av_frame->nb_samples = MPCLAMP(new, 0, f->av_frame->nb_samples);
             }
@@ -479,6 +479,8 @@ void mp_aframe_clip_timestamps(struct mp_aframe *f, double start, double end)
                 f->av_frame->nb_samples = 0;
                 f->pts = f_end;
             } else {
+                if (af_fmt_is_spdif(mp_aframe_get_format(f)))
+                    return;
                 int skip = (start - f->pts) * rate;
                 skip = MPCLAMP(skip, 0, f->av_frame->nb_samples);
                 mp_aframe_skip_samples(f, skip);
@@ -633,16 +635,24 @@ int mp_aframe_pool_allocate(struct mp_aframe_pool *pool, struct mp_aframe *frame
     AVFrame *av_frame = frame->av_frame;
     if (av_frame->extended_data != av_frame->data)
         av_freep(&av_frame->extended_data); // sigh
-    av_frame->extended_data =
-        av_mallocz_array(planes, sizeof(av_frame->extended_data[0]));
-    if (!av_frame->extended_data)
-        abort();
+    if (planes > AV_NUM_DATA_POINTERS) {
+        av_frame->extended_data =
+            av_mallocz_array(planes, sizeof(av_frame->extended_data[0]));
+        if (!av_frame->extended_data)
+            abort();
+    } else {
+        av_frame->extended_data = av_frame->data;
+    }
     av_frame->buf[0] = av_buffer_pool_get(pool->avpool);
     if (!av_frame->buf[0])
         return -1;
     av_frame->linesize[0] = samples * sstride;
     for (int n = 0; n < planes; n++)
         av_frame->extended_data[n] = av_frame->buf[0]->data + n * plane_size;
+    if (planes > AV_NUM_DATA_POINTERS) {
+        for (int n = 0; n < AV_NUM_DATA_POINTERS; n++)
+            av_frame->data[n] = av_frame->extended_data[n];
+    }
     av_frame->nb_samples = samples;
 
     return 0;

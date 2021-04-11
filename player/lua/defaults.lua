@@ -42,6 +42,11 @@ function mp.input_disable_section(section)
     mp.commandv("disable-section", section)
 end
 
+function mp.get_mouse_pos()
+    local m = mp.get_property_native("mouse-pos")
+    return m.x, m.y
+end
+
 -- For dispatching script-binding. This is sent as:
 --      script-message-to $script_name $binding_name $keystate
 -- The array is indexed by $binding_name, and has functions like this as value:
@@ -547,12 +552,35 @@ end
 
 local hook_table = {}
 
+local hook_mt = {}
+hook_mt.__index = hook_mt
+
+function hook_mt.cont(t)
+    if t._id == nil then
+        mp.msg.error("hook already continued")
+    else
+        mp.raw_hook_continue(t._id)
+        t._id = nil
+    end
+end
+
+function hook_mt.defer(t)
+    t._defer = true
+end
+
 mp.register_event("hook", function(ev)
     local fn = hook_table[tonumber(ev.id)]
+    local hookobj = {
+        _id = ev.hook_id,
+        _defer = false,
+    }
+    setmetatable(hookobj, hook_mt)
     if fn then
-        fn()
+        fn(hookobj)
     end
-    mp.raw_hook_continue(ev.hook_id)
+    if (not hookobj._defer) and hookobj._id ~= nil then
+        hookobj:cont()
+    end
 end)
 
 function mp.add_hook(name, pri, cb)

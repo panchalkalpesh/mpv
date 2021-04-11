@@ -317,12 +317,12 @@ static const struct gl_video_opts gl_video_opts_def = {
     },
     .scaler_resizes_only = 1,
     .scaler_lut_size = 6,
-    .interpolation_threshold = 0.0001,
+    .interpolation_threshold = 0.01,
     .alpha_mode = ALPHA_BLEND_TILES,
     .background = {0, 0, 0, 255},
     .gamma = 1.0f,
     .tone_map = {
-        .curve = TONE_MAPPING_HABLE,
+        .curve = TONE_MAPPING_BT_2390,
         .curve_param = NAN,
         .max_boost = 1.0,
         .decay_rate = 100.0,
@@ -330,19 +330,20 @@ static const struct gl_video_opts gl_video_opts_def = {
         .scene_threshold_high = 10.0,
         .desat = 0.75,
         .desat_exp = 1.5,
+        .gamut_clipping = 1,
     },
     .early_flush = -1,
     .hwdec_interop = "auto",
 };
 
 static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, struct bstr param);
+                               struct bstr name, const char **value);
 
 static int validate_window_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, struct bstr param);
+                               struct bstr name, const char **value);
 
 static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
-                                        struct bstr name, struct bstr param);
+                                        struct bstr name, const char **value);
 
 #define OPT_BASE_STRUCT struct gl_video_opts
 
@@ -382,7 +383,8 @@ const struct m_sub_options gl_video_conf = {
             {"reinhard", TONE_MAPPING_REINHARD},
             {"hable",    TONE_MAPPING_HABLE},
             {"gamma",    TONE_MAPPING_GAMMA},
-            {"linear",   TONE_MAPPING_LINEAR})},
+            {"linear",   TONE_MAPPING_LINEAR},
+            {"bt.2390",  TONE_MAPPING_BT_2390})},
         {"hdr-compute-peak", OPT_CHOICE(tone_map.compute_peak,
             {"auto", 0},
             {"yes", 1},
@@ -400,6 +402,7 @@ const struct m_sub_options gl_video_conf = {
         {"tone-mapping-desaturate-exponent", OPT_FLOAT(tone_map.desat_exp),
             M_RANGE(0.0, 20.0)},
         {"gamut-warning", OPT_FLAG(tone_map.gamut_warning)},
+        {"gamut-clipping", OPT_FLAG(tone_map.gamut_clipping)},
         {"opengl-pbo", OPT_FLAG(pbo)},
         SCALER_OPTS("scale",  SCALER_SCALE),
         SCALER_OPTS("dscale", SCALER_DSCALE),
@@ -660,6 +663,11 @@ static bool gl_video_get_lut3d(struct gl_video *p, enum mp_csp_prim prim,
         p->lut_3d_size[i] = lut3d->size[i];
 
     talloc_free(lut3d);
+
+    if (!p->lut_3d_texture) {
+        p->use_lut_3d = false;
+        return false;
+    }
 
     return true;
 }
@@ -949,9 +957,6 @@ static void init_video(struct gl_video *p)
                        params.w, params.h);
 
             plane->tex = ra_tex_create(p->ra, &params);
-            if (!plane->tex)
-                abort(); // shit happens
-
             p->use_integer_conversion |= format->ctype == RA_CTYPE_UINT;
         }
     }
@@ -2338,26 +2343,29 @@ static void pass_convert_yuv(struct gl_video *p)
         // as per the BT.2020 specification, table 4. This is a non-linear
         // transformation because (constant) luminance receives non-equal
         // contributions from the three different channels.
-        GLSLF("// constant luminance conversion\n");
-        GLSL(color.br = color.br * mix(vec2(1.5816, 0.9936),
-                                       vec2(1.9404, 1.7184),
-                                       lessThanEqual(color.br, vec2(0)))
-                        + color.gg;)
+        GLSLF("// constant luminance conversion \n"
+              "color.br = color.br * mix(vec2(1.5816, 0.9936),              \n"
+              "                         vec2(1.9404, 1.7184),               \n"
+              "                         %s(lessThanEqual(color.br, vec2(0))))\n"
+              "          + color.gg;                                        \n",
+              gl_sc_bvec(p->sc, 2));
         // Expand channels to camera-linear light. This shader currently just
         // assumes everything uses the BT.2020 12-bit gamma function, since the
         // difference between 10 and 12-bit is negligible for anything other
         // than 12-bit content.
-        GLSL(color.rgb = mix(color.rgb * vec3(1.0/4.5),
-                             pow((color.rgb + vec3(0.0993))*vec3(1.0/1.0993),
-                                 vec3(1.0/0.45)),
-                             lessThanEqual(vec3(0.08145), color.rgb));)
+        GLSLF("color.rgb = mix(color.rgb * vec3(1.0/4.5),                       \n"
+              "                pow((color.rgb + vec3(0.0993))*vec3(1.0/1.0993), \n"
+              "                    vec3(1.0/0.45)),                             \n"
+              "                %s(lessThanEqual(vec3(0.08145), color.rgb)));    \n",
+              gl_sc_bvec(p->sc, 3));
         // Calculate the green channel from the expanded RYcB
         // The BT.2020 specification says Yc = 0.2627*R + 0.6780*G + 0.0593*B
         GLSL(color.g = (color.g - 0.2627*color.r - 0.0593*color.b)*1.0/0.6780;)
         // Recompress to receive the R'G'B' result, same as other systems
-        GLSL(color.rgb = mix(color.rgb * vec3(4.5),
-                             vec3(1.0993) * pow(color.rgb, vec3(0.45)) - vec3(0.0993),
-                             lessThanEqual(vec3(0.0181), color.rgb));)
+        GLSLF("color.rgb = mix(color.rgb * vec3(4.5),                       \n"
+              "                vec3(1.0993) * pow(color.rgb, vec3(0.45)) - vec3(0.0993), \n"
+              "                %s(lessThanEqual(vec3(0.0181), color.rgb))); \n",
+              gl_sc_bvec(p->sc, 3));
     }
 
     p->components = 3;
@@ -3243,9 +3251,11 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
 
     bool has_frame = !!frame->current;
 
-    struct m_color c = p->clear_color;
-    float clear_color[4] = {c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0};
-    p->ra->fns->clear(p->ra, fbo.tex, clear_color, &target_rc);
+    if (!has_frame || !mp_rect_equals(&p->dst_rect, &target_rc)) {
+        struct m_color c = p->clear_color;
+        float clear_color[4] = {c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0};
+        p->ra->fns->clear(p->ra, fbo.tex, clear_color, &target_rc);
+    }
 
     if (p->hwdec_overlay) {
         if (has_frame) {
@@ -3575,6 +3585,10 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
     timer_pool_start(p->upload_timer);
     for (int n = 0; n < p->plane_count; n++) {
         struct texplane *plane = &vimg->planes[n];
+        if (!plane->tex) {
+            timer_pool_stop(p->upload_timer);
+            goto error;
+        }
 
         struct ra_tex_upload_params params = {
             .tex = plane->tex,
@@ -4075,13 +4089,16 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
 }
 
 static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, struct bstr param)
+                               struct bstr name, const char **value)
 {
+    struct bstr param = bstr0(*value);
     char s[20] = {0};
     int r = 1;
     bool tscale = bstr_equals0(name, "tscale");
     if (bstr_equals0(param, "help")) {
         r = M_OPT_EXIT;
+    } else if (bstr_equals0(name, "dscale") && !param.len) {
+        return r; // empty dscale means "use same as upscaler"
     } else {
         snprintf(s, sizeof(s), "%.*s", BSTR_P(param));
         if (!handle_scaler_opt(s, tscale))
@@ -4105,12 +4122,15 @@ static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
 }
 
 static int validate_window_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, struct bstr param)
+                               struct bstr name, const char **value)
 {
+    struct bstr param = bstr0(*value);
     char s[20] = {0};
     int r = 1;
     if (bstr_equals0(param, "help")) {
         r = M_OPT_EXIT;
+    } else if (!param.len) {
+        return r; // empty string means "use preferred window"
     } else {
         snprintf(s, sizeof(s), "%.*s", BSTR_P(param));
         const struct filter_window *window = mp_find_filter_window(s);
@@ -4128,8 +4148,9 @@ static int validate_window_opt(struct mp_log *log, const m_option_t *opt,
 }
 
 static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
-                                        struct bstr name, struct bstr param)
+                                        struct bstr name, const char **value)
 {
+    struct bstr param = bstr0(*value);
     char s[20] = {0};
     int r = 1;
     if (bstr_equals0(param, "help")) {

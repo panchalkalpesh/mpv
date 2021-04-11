@@ -182,7 +182,7 @@ main_dependencies = [
         'name': '--swift',
         'desc': 'macOS Swift build tools',
         'deps': 'os-darwin',
-        'func': check_swift,
+        'func': compose_checks(check_swift('4.1'), check_macos_sdk('10.10')),
     }, {
         'name': '--uwp',
         'desc': 'Universal Windows Platform',
@@ -302,6 +302,10 @@ iconv support use --disable-iconv.",
         'func': check_statement('sys/vfs.h',
                                 'struct statfs fs; fstatfs(0, &fs); fs.f_namelen')
     }, {
+        'name': 'linux-input-event-codes',
+        'desc': "Linux's input-event-codes.h",
+        'func': check_cc(header_name=['linux/input-event-codes.h']),
+    }, {
         'name' : '--lua',
         'desc' : 'Lua',
         'func': check_lua,
@@ -312,15 +316,15 @@ iconv support use --disable-iconv.",
     }, {
         'name': 'libass',
         'desc': 'SSA/ASS support',
-        'func': check_pkg_config('libass', '>= 0.12.1'),
+        'func': check_pkg_config('libass', '>= 0.12.2'),
         'req': True,
         'fmsg': "Unable to find development files for libass, or the version " +
                 "found is too old. Aborting."
     }, {
         'name': '--zlib',
         'desc': 'zlib',
-        'func': check_libs(['z'],
-                    check_statement('zlib.h', 'inflate(0, Z_NO_FLUSH)')),
+        'func': any_check(check_pkg_config('zlib'),
+                          check_libs(['z'], check_statement('zlib.h', 'inflate(0, Z_NO_FLUSH)'))),
         'req': True,
         'fmsg': 'Unable to find development files for zlib.'
     }, {
@@ -418,6 +422,11 @@ audio_output_features = [
         'deps': 'sdl2',
         'func': check_true,
     }, {
+        'name': '--oss-audio',
+        'desc': 'OSSv4 audio output',
+        'func': check_statement(['sys/soundcard.h'], 'int x = SNDCTL_DSP_SETPLAYVOL'),
+        'deps': 'posix && gpl',
+    }, {
         'name': '--pulse',
         'desc': 'PulseAudio audio output',
         'func': check_pkg_config('libpulse', '>= 1.0')
@@ -491,7 +500,7 @@ video_output_features = [
     } , {
         'name': '--wayland',
         'desc': 'Wayland',
-        'deps': 'wayland-protocols && wayland-scanner',
+        'deps': 'wayland-protocols && wayland-scanner && linux-input-event-codes',
         'func': check_pkg_config('wayland-client', '>= 1.15.0',
                                  'wayland-cursor', '>= 1.15.0',
                                  'xkbcommon',      '>= 0.3.0'),
@@ -526,12 +535,13 @@ video_output_features = [
                                 cflags=['-DGL_SILENCE_DEPRECATION'])
     } , {
         'name': '--gl-x11',
-        'desc': 'OpenGL X11 Backend',
+        'desc': 'OpenGL X11/GLX (deprecated/legacy)',
         'deps': 'x11',
         'groups': [ 'gl' ],
         'func': check_libs(['GL', 'GL Xdamage'],
                    check_cc(fragment=load_fragment('gl_x11.c'),
-                            use=['x11', 'libdl', 'pthreads']))
+                            use=['x11', 'libdl', 'pthreads'])),
+        'default': 'disable',
     }, {
         'name': '--rpi',
         'desc': 'Raspberry Pi support',
@@ -720,7 +730,7 @@ video_output_features = [
     }, {
         'name': '--libplacebo',
         'desc': 'libplacebo support',
-        'func': check_pkg_config('libplacebo >= 1.18.0'),
+        'func': check_pkg_config('libplacebo >= 2.72.0'),
     }, {
         'name': '--vulkan',
         'desc':  'Vulkan context support',
@@ -736,6 +746,10 @@ video_output_features = [
         'desc': 'EGL helper functions',
         'deps': 'egl || rpi || egl-angle-win32 || egl-android',
         'func': check_true
+    }, {
+        'name': '--sixel',
+        'desc': 'Sixel',
+        'func': check_pkg_config('libsixel', '>= 1.5'),
     }
 ]
 
@@ -949,15 +963,15 @@ def configure(ctx):
         while re.match('\$\{([^}]+)\}', ctx.env[varname]):
             ctx.env[varname] = Utils.subst_vars(ctx.env[varname], ctx.env)
 
+    if ctx.options.LUA_VER:
+        ctx.options.enable_lua = True
+
     ctx.parse_dependencies(build_options)
     ctx.parse_dependencies(main_dependencies)
     ctx.parse_dependencies(libav_dependencies)
     ctx.parse_dependencies(audio_output_features)
     ctx.parse_dependencies(video_output_features)
     ctx.parse_dependencies(hwaccel_features)
-
-    if ctx.options.LUA_VER:
-        ctx.options.enable_lua = True
 
     if ctx.options.SWIFT_FLAGS:
         ctx.env.SWIFT_FLAGS.extend(split(ctx.options.SWIFT_FLAGS))

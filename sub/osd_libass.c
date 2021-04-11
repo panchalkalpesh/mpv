@@ -63,7 +63,7 @@ static void create_ass_renderer(struct osd_state *osd, struct ass_state *ass)
 
     mp_ass_configure_fonts(ass->render, osd->opts->osd_style,
                            osd->global, ass->log);
-    ass_set_aspect_ratio(ass->render, 1.0, 1.0);
+    ass_set_pixel_aspect(ass->render, 1.0);
 }
 
 static void destroy_ass_renderer(struct ass_state *ass)
@@ -132,6 +132,7 @@ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
     track->Timer = 100.;
     track->WrapStyle = 1; // end-of-line wrapping instead of smart wrapping
     track->Kerning = true;
+    track->ScaledBorderAndShadow = true;
 
     update_playres(ass, &obj->vo_res);
 }
@@ -621,7 +622,7 @@ static void append_ass(struct ass_state *ass, struct mp_osd_res *res,
     update_playres(ass, res);
 
     ass_set_frame_size(ass->render, res->w, res->h);
-    ass_set_aspect_ratio(ass->render, res->display_par, 1.0);
+    ass_set_pixel_aspect(ass->render, res->display_par);
 
     int ass_changed;
     *img_list = ass_render_frame(ass->render, ass->track, 0, &ass_changed);

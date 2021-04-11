@@ -85,7 +85,8 @@ def build(ctx):
     )
 
     lua_files = ["defaults.lua", "assdraw.lua", "options.lua", "osc.lua",
-                 "ytdl_hook.lua", "stats.lua", "console.lua"]
+                 "ytdl_hook.lua", "stats.lua", "console.lua",
+                 "auto_profiles.lua"]
 
     for fn in lua_files:
         fn = "player/lua/" + fn
@@ -152,7 +153,7 @@ def build(ctx):
 
         return task.exec_command(cmd)
 
-    if ctx.dependency_satisfied('macos-cocoa-cb'):
+    if ctx.dependency_satisfied('cocoa') and ctx.dependency_satisfied('swift'):
         swift_source = [
             ( "osdep/macos/log_helper.swift" ),
             ( "osdep/macos/libmpv_helper.swift" ),
@@ -160,11 +161,12 @@ def build(ctx):
             ( "osdep/macos/swift_extensions.swift" ),
             ( "osdep/macos/swift_compat.swift" ),
             ( "osdep/macos/remote_command_center.swift", "macos-media-player" ),
-            ( "video/out/cocoa-cb/events_view.swift" ),
-            ( "video/out/cocoa-cb/video_layer.swift" ),
-            ( "video/out/cocoa-cb/window.swift" ),
-            ( "video/out/cocoa-cb/title_bar.swift" ),
-            ( "video/out/cocoa_cb_common.swift" ),
+            ( "video/out/mac/common.swift" ),
+            ( "video/out/mac/view.swift" ),
+            ( "video/out/mac/window.swift" ),
+            ( "video/out/mac/title_bar.swift" ),
+            ( "video/out/cocoa_cb_common.swift", "macos-cocoa-cb" ),
+            ( "video/out/mac/gl_layer.swift", "macos-cocoa-cb" ),
         ]
 
         ctx(
@@ -215,7 +217,6 @@ def build(ctx):
     sources = [
         ## Audio
         ( "audio/aframe.c" ),
-        ( "audio/audio_buffer.c" ),
         ( "audio/chmap.c" ),
         ( "audio/chmap_sel.c" ),
         ( "audio/decode/ad_lavc.c" ),
@@ -225,6 +226,8 @@ def build(ctx):
         ( "audio/filter/af_lavcac3enc.c" ),
         ( "audio/filter/af_rubberband.c",        "rubberband" ),
         ( "audio/filter/af_scaletempo.c" ),
+        ( "audio/filter/af_scaletempo2.c" ),
+        ( "audio/filter/af_scaletempo2_internals.c" ),
         ( "audio/fmt-conversion.c" ),
         ( "audio/format.c" ),
         ( "audio/out/ao.c" ),
@@ -241,6 +244,7 @@ def build(ctx):
         ( "audio/out/ao_null.c" ),
         ( "audio/out/ao_openal.c",               "openal" ),
         ( "audio/out/ao_opensles.c",             "opensles" ),
+        ( "audio/out/ao_oss.c",                  "oss-audio" ),
         ( "audio/out/ao_pcm.c" ),
         ( "audio/out/ao_pulse.c",                "pulse" ),
         ( "audio/out/ao_sdl.c",                  "sdl2-audio" ),
@@ -316,7 +320,6 @@ def build(ctx):
         ( "misc/natural_sort.c" ),
         ( "misc/node.c" ),
         ( "misc/rendezvous.c" ),
-        ( "misc/ring.c" ),
         ( "misc/thread_pool.c" ),
         ( "misc/thread_tools.c" ),
 
@@ -357,6 +360,7 @@ def build(ctx):
         ( "stream/stream_cb.c" ),
         ( "stream/stream_cdda.c",                "cdda" ),
         ( "stream/stream_concat.c" ),
+        ( "stream/stream_slice.c" ),
         ( "stream/stream_dvb.c",                 "dvbin" ),
         ( "stream/stream_dvdnav.c",              "dvdnav" ),
         ( "stream/stream_edl.c" ),
@@ -452,6 +456,7 @@ def build(ctx):
         ( "video/out/hwdec/hwdec_vaapi.c",       "vaapi-egl || vaapi-vulkan" ),
         ( "video/out/hwdec/hwdec_vaapi_gl.c",    "vaapi-egl" ),
         ( "video/out/hwdec/hwdec_vaapi_vk.c",    "vaapi-vulkan" ),
+        ( "video/out/libmpv_sw.c" ),
         ( "video/out/placebo/ra_pl.c",           "libplacebo" ),
         ( "video/out/placebo/utils.c",           "libplacebo" ),
         ( "video/out/opengl/angle_dynamic.c",    "egl-angle" ),
@@ -493,6 +498,7 @@ def build(ctx):
         ( "video/out/vo_null.c" ),
         ( "video/out/vo_rpi.c",                  "rpi-mmal" ),
         ( "video/out/vo_sdl.c",                  "sdl2-video" ),
+        ( "video/out/vo_sixel.c",                "sixel" ),
         ( "video/out/vo_tct.c" ),
         ( "video/out/vo_vaapi.c",                "vaapi-x11 && gpl" ),
         ( "video/out/vo_vdpau.c",                "vdpau" ),
@@ -624,7 +630,7 @@ def build(ctx):
             )
 
             wrapctx.env.cprogram_PATTERN = "%s.com"
-            wrapflags = ['-municode', '-mconsole']
+            wrapflags = ['-municode', '-Wl,--subsystem,console']
             wrapctx.env.CFLAGS = ctx.env.CFLAGS + wrapflags
             wrapctx.env.LAST_LINKFLAGS = ctx.env.LAST_LINKFLAGS + wrapflags
 
@@ -731,7 +737,7 @@ def build(ctx):
 
         ctx.install_files(ctx.env.CONFDIR, ['etc/encoding-profiles.conf'] )
 
-        for size in '16x16 32x32 64x64'.split():
+        for size in '16x16 32x32 64x64 128x128'.split():
             ctx.install_as(
                 ctx.env.DATADIR + '/icons/hicolor/' + size + '/apps/mpv.png',
                 'etc/mpv-icon-8bit-' + size + '.png')

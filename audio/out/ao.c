@@ -35,6 +35,7 @@
 #include "common/common.h"
 #include "common/global.h"
 
+extern const struct ao_driver audio_out_oss;
 extern const struct ao_driver audio_out_audiotrack;
 extern const struct ao_driver audio_out_audiounit;
 extern const struct ao_driver audio_out_coreaudio;
@@ -70,6 +71,9 @@ static const struct ao_driver * const audio_out_drivers[] = {
 #endif
 #if HAVE_WASAPI
     &audio_out_wasapi,
+#endif
+#if HAVE_OSS_AUDIO
+    &audio_out_oss,
 #endif
     // wrappers:
 #if HAVE_JACK
@@ -204,8 +208,6 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
 
     init_buffer_pre(ao);
 
-    ao->period_size = 1;
-
     int r = ao->driver->init(ao);
     if (r < 0) {
         // Silly exception for coreaudio spdif redirection
@@ -221,11 +223,6 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
         goto fail;
     }
     ao->driver_initialized = true;
-
-    if (ao->period_size < 1) {
-        MP_ERR(ao, "Invalid period size set.\n");
-        goto fail;
-    }
 
     ao->sstride = af_fmt_to_bytes(ao->format);
     ao->num_planes = 1;

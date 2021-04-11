@@ -61,6 +61,31 @@ const char m_option_path_separator = OPTION_PATH_SEPARATOR;
 #define OPT_INT_MAX(opt, T, Tm) ((opt)->min < (opt)->max \
     ? ((opt)->max >= (double)(Tm) ? (Tm) : (T)((opt)->max)) : (Tm))
 
+int m_option_parse(struct mp_log *log, const m_option_t *opt,
+                   struct bstr name, struct bstr param, void *dst)
+{
+    int r = M_OPT_INVALID;
+    if (bstr_equals0(param, "help") && opt->help) {
+        r = opt->help(log, opt, name);
+        if (r < 0)
+            return r;
+    }
+
+    r = opt->type->parse(log, opt, name, param, dst);
+    if (r < 0)
+        return r;
+
+    if (opt->validate) {
+        r = opt->validate(log, opt, name, dst);
+        if (r < 0) {
+            if (opt->type->free)
+                opt->type->free(dst);
+            return r;
+        }
+    }
+    return 1;
+}
+
 char *m_option_strerror(int code)
 {
     switch (code) {
@@ -1192,13 +1217,6 @@ const m_option_type_t m_option_type_aspect = {
 static int parse_str(struct mp_log *log, const m_option_t *opt,
                      struct bstr name, struct bstr param, void *dst)
 {
-    m_opt_string_validate_fn validate = opt->priv;
-    if (validate) {
-        int r = validate(log, opt, name, param);
-        if (r < 0)
-            return r;
-    }
-
     if (dst) {
         talloc_free(VAL(dst));
         VAL(dst) = bstrdup0(NULL, param);
@@ -1710,7 +1728,7 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
             val = param;
             param.len = 0;
         } else {
-            r = read_subparam(log, name, ",:", &param, &val);
+            r = read_subparam(log, name, ",", &param, &val);
             if (r < 0)
                 break;
         }
@@ -2145,7 +2163,7 @@ static bool parse_geometry_str(struct m_geometry *gm, bstr s)
     if (s.len == 0)
         return true;
     // Approximate grammar:
-    // [[W][xH]][{+-}X{+-}Y] | [X:Y]
+    // [[W][xH]][{+-}X{+-}Y][/WS] | [X:Y]
     // (meaning: [optional] {one character of} one|alternative)
     // Every number can be followed by '%'
     int num;
@@ -2180,6 +2198,14 @@ static bool parse_geometry_str(struct m_geometry *gm, bstr s)
             READ_NUM(x, x_per);
             READ_SIGN(y_sign);
             READ_NUM(y, y_per);
+        }
+        if (bstr_eatstart0(&s, "/")) {
+            bstr rest;
+            long long v = bstrtoll(s, &rest, 10);
+            if (s.len == rest.len || v < 1 || v > INT_MAX)
+                goto error;
+            s = rest;
+            gm->ws = v;
         }
     } else {
         gm->xy_valid = true;
@@ -2217,6 +2243,8 @@ static char *print_geometry(const m_option_t *opt, const void *val)
             res = talloc_asprintf_append(res, gm->y_sign ? "-" : "+");
             APPEND_PER(y, y_per);
         }
+        if (gm->ws > 0)
+            res = talloc_asprintf_append(res, "/%d", gm->ws);
     }
     return res;
 }
@@ -2301,7 +2329,8 @@ static bool geometry_equal(const m_option_t *opt, void *a, void *b)
            ga->xy_valid == gb->xy_valid && ga->wh_valid == gb->wh_valid &&
            ga->w_per == gb->w_per && ga->h_per == gb->h_per &&
            ga->x_per == gb->x_per && ga->y_per == gb->y_per &&
-           ga->x_sign == gb->x_sign && ga->y_sign == gb->y_sign;
+           ga->x_sign == gb->x_sign && ga->y_sign == gb->y_sign &&
+           ga->ws == gb->ws;
 }
 
 const m_option_type_t m_option_type_geometry = {

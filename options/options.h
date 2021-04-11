@@ -19,10 +19,14 @@ typedef struct mp_vo_opts {
     int all_workspaces;
     int window_minimized;
     int window_maximized;
+    bool focus_on_open;
 
     int screen_id;
+    char *screen_name;
     int fsscreen_id;
+    char *fsscreen_name;
     char *winname;
+    char *appid;
     int x11_netwm;
     int x11_bypass_compositor;
     int native_keyrepeat;
@@ -61,6 +65,8 @@ typedef struct mp_vo_opts {
     // vo_drm
     struct drm_opts *drm_opts;
 
+    struct m_geometry android_surface_size;
+
     int swapchain_depth;  // max number of images to render ahead
 } mp_vo_opts;
 
@@ -72,6 +78,7 @@ struct mp_subtitle_opts {
     float sub_fps;
     float sub_speed;
     int forced_subs_only;
+    int forced_subs_only_current;
     int stretch_dvd_subs;
     int stretch_image_subs;
     int image_subs_video_res;
@@ -144,6 +151,7 @@ typedef struct MPOpts {
     char **lua_ytdl_raw_options;
     int lua_load_stats;
     int lua_load_console;
+    int lua_load_auto_profiles;
 
     int auto_load_scripts;
 
@@ -250,6 +258,7 @@ typedef struct MPOpts {
     int stream_id[2][STREAM_TYPE_COUNT];
     char **stream_lang[STREAM_TYPE_COUNT];
     int stream_auto_sel;
+    int subs_with_matching_audio;
     int audio_display;
     char **display_tags;
 
@@ -269,6 +278,7 @@ typedef struct MPOpts {
     struct image_writer_opts *screenshot_image_opts;
     char *screenshot_template;
     char *screenshot_directory;
+    bool screenshot_sw;
 
     int index_mode;
 
@@ -284,10 +294,12 @@ typedef struct MPOpts {
     char **sub_name;
     char **sub_paths;
     char **audiofile_paths;
+    char **coverart_files;
     char **external_files;
     int autoload_files;
     int sub_auto;
     int audiofile_auto;
+    int coverart_auto;
     int osd_bar_visible;
 
     int w32_priority;
@@ -336,7 +348,6 @@ typedef struct MPOpts {
     struct d3d11va_opts *d3d11va_opts;
     struct cocoa_opts *cocoa_opts;
     struct macos_opts *macos_opts;
-    struct android_opts *android_opts;
     struct wayland_opts *wayland_opts;
     struct dvd_opts *dvd_opts;
     struct vaapi_opts *vaapi_opts;

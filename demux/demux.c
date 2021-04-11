@@ -121,8 +121,7 @@ const struct m_sub_options demux_conf = {
             M_RANGE(0, M_MAX_MEM_BYTES)},
         {"demuxer-donate-buffer", OPT_FLAG(donate_fw)},
         {"force-seekable", OPT_FLAG(force_seekable)},
-        {"cache-secs", OPT_DOUBLE(min_secs_cache), M_RANGE(0, DBL_MAX),
-            .deprecation_message = "will use unlimited time"},
+        {"cache-secs", OPT_DOUBLE(min_secs_cache), M_RANGE(0, DBL_MAX)},
         {"access-references", OPT_FLAG(access_references)},
         {"demuxer-seekable-cache", OPT_CHOICE(seekable_cache,
             {"auto", -1}, {"no", 0}, {"yes", 1})},
@@ -2827,7 +2826,7 @@ done:
     return out_pkt;
 }
 
-void demuxer_help(struct mp_log *log)
+int demuxer_help(struct mp_log *log, const m_option_t *opt, struct bstr name)
 {
     int i;
 
@@ -2837,6 +2836,9 @@ void demuxer_help(struct mp_log *log)
         mp_info(log, "%10s  %s\n",
                 demuxer_list[i]->name, demuxer_list[i]->desc);
     }
+    mp_info(log, "\n");
+
+    return M_OPT_EXIT;
 }
 
 static const char *d_level(enum demux_check level)
@@ -3487,12 +3489,19 @@ void demux_flush(demuxer_t *demuxer)
     struct demux_internal *in = demuxer->in;
     assert(demuxer == in->d_user);
 
-    pthread_mutex_lock(&demuxer->in->lock);
+    pthread_mutex_lock(&in->lock);
     clear_reader_state(in, true);
     for (int n = 0; n < in->num_ranges; n++)
         clear_cached_range(in, in->ranges[n]);
     free_empty_cached_ranges(in);
-    pthread_mutex_unlock(&demuxer->in->lock);
+    for (int n = 0; n < in->num_streams; n++) {
+        struct demux_stream *ds = in->streams[n]->ds;
+        ds->refreshing = false;
+        ds->eof = false;
+    }
+    in->eof = false;
+    in->seeking = false;
+    pthread_mutex_unlock(&in->lock);
 }
 
 // Does some (but not all) things for switching to another range.
@@ -3959,6 +3968,26 @@ void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
         } else {
             execute_trackswitch(in);
         }
+    }
+    pthread_mutex_unlock(&in->lock);
+}
+
+// Execute a refresh seek on the given stream.
+// ref_pts has the same meaning as with demuxer_select_track()
+void demuxer_refresh_track(struct demuxer *demuxer, struct sh_stream *stream,
+                           double ref_pts)
+{
+    struct demux_internal *in = demuxer->in;
+    struct demux_stream *ds = stream->ds;
+    pthread_mutex_lock(&in->lock);
+    ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
+    if (ds->selected) {
+        MP_VERBOSE(in, "refresh track %d\n", stream->index);
+        update_stream_selection_state(in, ds);
+        if (in->back_demuxing)
+            ds->back_seek_pos = ref_pts;
+        if (!in->after_seek)
+            initiate_refresh_seek(in, ds, ref_pts);
     }
     pthread_mutex_unlock(&in->lock);
 }

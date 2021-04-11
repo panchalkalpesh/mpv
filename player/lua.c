@@ -77,6 +77,9 @@ static const char * const builtin_lua_scripts[][2] = {
     {"@console.lua",
 #   include "generated/player/lua/console.lua.inc"
     },
+    {"@auto_profiles.lua",
+#   include "generated/player/lua/auto_profiles.lua.inc"
+    },
     {0}
 };
 
@@ -673,10 +676,21 @@ static void makenode(void *tmp, mpv_node *dst, lua_State *L, int t)
         dst->format = MPV_FORMAT_FLAG;
         dst->u.flag = !!lua_toboolean(L, t);
         break;
-    case LUA_TSTRING:
-        dst->format = MPV_FORMAT_STRING;
-        dst->u.string = talloc_strdup(tmp, lua_tostring(L, t));
+    case LUA_TSTRING: {
+        size_t len = 0;
+        char *s = (char *)lua_tolstring(L, t, &len);
+        bool has_zeros = !!memchr(s, 0, len);
+        if (has_zeros) {
+            mpv_byte_array *ba = talloc_zero(tmp, mpv_byte_array);
+            *ba = (mpv_byte_array){talloc_memdup(tmp, s, len), len};
+            dst->format = MPV_FORMAT_BYTE_ARRAY;
+            dst->u.ba = ba;
+        } else {
+            dst->format = MPV_FORMAT_STRING;
+            dst->u.string = talloc_strdup(tmp, s);
+        }
         break;
+    }
     case LUA_TTABLE: {
         // Lua uses the same type for arrays and maps, so guess the correct one.
         int format = MPV_FORMAT_NONE;
@@ -977,16 +991,6 @@ static int script_raw_abort_async_command(lua_State *L)
     return 0;
 }
 
-static int script_get_mouse_pos(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    int px, py;
-    mp_input_get_mouse_pos(mpctx->input, &px, &py);
-    lua_pushnumber(L, px);
-    lua_pushnumber(L, py);
-    return 2;
-}
-
 static int script_get_time(lua_State *L)
 {
     struct script_ctx *ctx = get_ctx(L);
@@ -1185,6 +1189,16 @@ static int script_format_json(lua_State *L, void *tmp)
     return 2;
 }
 
+static int script_get_env_list(lua_State *L)
+{
+    lua_newtable(L); // table
+    for (int n = 0; environ && environ[n]; n++) {
+        lua_pushstring(L, environ[n]); // table str
+        lua_rawseti(L, -2, n + 1); // table
+    }
+    return 1;
+}
+
 #define FN_ENTRY(name) {#name, script_ ## name, 0}
 #define AF_ENTRY(name) {#name, 0, script_ ## name}
 struct fn_entry {
@@ -1218,7 +1232,6 @@ static const struct fn_entry main_fns[] = {
     AF_ENTRY(set_property_native),
     FN_ENTRY(raw_observe_property),
     FN_ENTRY(raw_unobserve_property),
-    FN_ENTRY(get_mouse_pos),
     FN_ENTRY(get_time),
     FN_ENTRY(input_set_section_mouse_area),
     FN_ENTRY(format_time),
@@ -1237,6 +1250,7 @@ static const struct fn_entry utils_fns[] = {
     FN_ENTRY(getpid),
     AF_ENTRY(parse_json),
     AF_ENTRY(format_json),
+    FN_ENTRY(get_env_list),
     {0}
 };
 

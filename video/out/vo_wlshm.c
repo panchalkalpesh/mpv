@@ -23,6 +23,7 @@
 
 #include <libswscale/swscale.h>
 
+#include "osdep/endian.h"
 #include "sub/osd.h"
 #include "video/fmt-conversion.h"
 #include "video/mp_image.h"
@@ -123,6 +124,7 @@ static struct buffer *buffer_create(struct vo *vo, int width, int height)
     if (!buf->buffer)
         goto error4;
     wl_buffer_add_listener(buf->buffer, &buffer_listener, buf);
+
     close(fd);
     talloc_set_destructor(buf, buffer_destroy);
 
@@ -177,12 +179,13 @@ static int resize(struct vo *vo)
     const int32_t height = wl->scaling * mp_rect_h(wl->geometry);
     struct buffer *buf;
 
+    vo_wayland_set_opaque_region(wl, 0);
     vo->want_redraw = true;
     vo->dwidth = width;
     vo->dheight = height;
     vo_get_src_dst_rects(vo, &p->src, &p->dst, &p->osd);
     p->sws->dst = (struct mp_image_params) {
-        .imgfmt = IMGFMT_BGR0,
+        .imgfmt = MP_SELECT_LE_BE(IMGFMT_BGR0, IMGFMT_0RGB),
         .w = width,
         .h = height,
         .p_w = 1,
@@ -204,6 +207,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     if (events & VO_EVENT_RESIZE)
         ret = resize(vo);
+    if (events & VO_EVENT_EXPOSE)
+        vo->want_redraw = true;
     vo_event(vo, events);
     return ret;
 }
@@ -213,6 +218,11 @@ static void draw_image(struct vo *vo, struct mp_image *src)
     struct priv *p = vo->priv;
     struct vo_wayland_state *wl = vo->wl;
     struct buffer *buf;
+
+    if (wl->hidden)
+        return;
+
+    wl->frame_wait = true;
 
     buf = p->free_buffers;
     if (buf) {
@@ -263,6 +273,22 @@ static void flip_page(struct vo *vo)
     wl_surface_damage(wl->surface, 0, 0, mp_rect_w(wl->geometry),
                       mp_rect_h(wl->geometry));
     wl_surface_commit(wl->surface);
+
+    if (!wl->opts->disable_vsync)
+        vo_wayland_wait_frame(wl);
+
+    if (wl->presentation)
+        wayland_sync_swap(wl);
+}
+
+static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
+{
+    struct vo_wayland_state *wl = vo->wl;
+    if (wl->presentation) {
+        info->vsync_duration = wl->vsync_duration;
+        info->skipped_vsyncs = wl->last_skipped_vsyncs;
+        info->last_queue_display_time = wl->last_queue_display_time;
+    }
 }
 
 static void uninit(struct vo *vo)
@@ -292,6 +318,7 @@ const struct vo_driver video_out_wlshm = {
     .control = control,
     .draw_image = draw_image,
     .flip_page = flip_page,
+    .get_vsync = get_vsync,
     .wakeup = vo_wayland_wakeup,
     .wait_events = vo_wayland_wait_events,
     .uninit = uninit,

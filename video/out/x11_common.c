@@ -467,7 +467,8 @@ static void vo_x11_update_screeninfo(struct vo *vo)
     struct mp_vo_opts *opts = x11->opts;
     bool all_screens = opts->fullscreen && opts->fsscreen_id == -2;
     x11->screenrc = (struct mp_rect){.x1 = x11->ws_width, .y1 = x11->ws_height};
-    if (opts->screen_id >= -1 && XineramaIsActive(x11->display) && !all_screens)
+    if ((opts->screen_id >= -1 || opts->screen_name) && XineramaIsActive(x11->display) &&
+         !all_screens)
     {
         int screen = opts->fullscreen ? opts->fsscreen_id : opts->screen_id;
         XineramaScreenInfo *screens;
@@ -475,6 +476,23 @@ static void vo_x11_update_screeninfo(struct vo *vo)
 
         if (opts->fullscreen && opts->fsscreen_id == -1)
             screen = opts->screen_id;
+
+        if (screen == -1 && (opts->fsscreen_name || opts->screen_name)) {
+            char *screen_name = opts->fullscreen ? opts->fsscreen_name : opts->screen_name;
+            if (screen_name) {
+                bool screen_found = false;
+                for (int n = 0; n < x11->num_displays; n++) {
+                    char *display_name = x11->displays[n].name;
+                    if (!strcmp(display_name, screen_name)) {
+                        screen = n;
+                        screen_found = true;
+                        break;
+                    }
+                }
+                if (!screen_found)
+                    MP_WARN(x11, "Screen name %s not found!\n", screen_name);
+            }
+        }
 
         screens = XineramaQueryScreens(x11->display, &num_screens);
         if (screen >= num_screens)
@@ -527,30 +545,6 @@ static void vo_x11_get_bounding_monitors(struct vo_x11_state *x11, long b[4])
     XFree(screens);
 }
 
-static void *screensaver_thread(void *arg)
-{
-    struct vo_x11_state *x11 = arg;
-
-    for (;;) {
-        sem_wait(&x11->screensaver_sem);
-        // don't queue multiple wakeups
-        while (!sem_trywait(&x11->screensaver_sem)) {}
-
-        if (atomic_load(&x11->screensaver_terminate))
-            break;
-
-        char *args[] = {"xdg-screensaver", "reset", NULL};
-        int status = mp_subprocess(args, NULL, NULL, mp_devnull, mp_devnull, &(char*){0});
-        if (status) {
-            MP_VERBOSE(x11, "Disabling screensaver failed (%d). Make sure the "
-                            "xdg-screensaver script is installed.\n", status);
-            break;
-        }
-    }
-
-    return NULL;
-}
-
 int vo_x11_init(struct vo *vo)
 {
     char *dispName;
@@ -571,13 +565,6 @@ int vo_x11_init(struct vo *vo)
     };
     x11->opts = x11->opts_cache->opts;
     vo->x11 = x11;
-
-    sem_init(&x11->screensaver_sem, 0, 0);
-    if (pthread_create(&x11->screensaver_thread, NULL, screensaver_thread, x11)) {
-        sem_destroy(&x11->screensaver_sem);
-        goto error;
-    }
-    x11->screensaver_thread_running = true;
 
     x11_error_output = x11->log;
     XSetErrorHandler(x11_errorhandler);
@@ -806,13 +793,6 @@ void vo_x11_uninit(struct vo *vo)
         XSetErrorHandler(NULL);
         x11_error_output = NULL;
         XCloseDisplay(x11->display);
-    }
-
-    if (x11->screensaver_thread_running) {
-        atomic_store(&x11->screensaver_terminate, true);
-        sem_post(&x11->screensaver_sem);
-        pthread_join(x11->screensaver_thread, NULL);
-        sem_destroy(&x11->screensaver_sem);
     }
 
     if (x11->wakeup_pipe[0] >= 0) {
@@ -1057,6 +1037,11 @@ static void vo_x11_check_net_wm_state_change(struct vo *vo)
             XFree(elems);
         }
 
+        if (opts->window_maximized && !is_maximized && x11->pending_geometry_change) {
+            vo_x11_config_vo_window(vo);
+            x11->pending_geometry_change = false;
+        }
+
         opts->window_minimized = is_minimized;
         m_config_cache_write_opt(x11->opts_cache, &opts->window_minimized);
         opts->window_maximized = is_maximized;
@@ -1166,11 +1151,13 @@ void vo_x11_check_events(struct vo *vo)
         case FocusIn:
             x11->has_focus = true;
             vo_update_cursor(vo);
+            x11->pending_vo_events |= VO_EVENT_FOCUS;
             break;
         case FocusOut:
             release_all_keys(vo);
             x11->has_focus = false;
             vo_update_cursor(vo);
+            x11->pending_vo_events |= VO_EVENT_FOCUS;
             break;
         case KeyRelease:
             release_all_keys(vo);
@@ -1536,8 +1523,9 @@ static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
         x11_send_ewmh_msg(x11, "_NET_WM_FULLSCREEN_MONITORS", params);
     }
 
-    if (x11->opts->all_workspaces) {
-        long v = 0xFFFFFFFF;
+    if (x11->opts->all_workspaces || x11->opts->geometry.ws > 0) {
+        long v = x11->opts->all_workspaces
+                ? 0xFFFFFFFF : x11->opts->geometry.ws - 1;
         XChangeProperty(x11->display, x11->window, XA(x11, _NET_WM_DESKTOP),
                         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&v, 1);
     }
@@ -1855,6 +1843,17 @@ static void vo_x11_minimize(struct vo *vo)
     }
 }
 
+static void vo_x11_set_geometry(struct vo *vo)
+{
+    struct vo_x11_state *x11 = vo->x11;
+
+    if (x11->opts->window_maximized) {
+        x11->pending_geometry_change = true;
+    } else {
+        vo_x11_config_vo_window(vo);
+    }
+}
+
 int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
 {
     struct vo_x11_state *x11 = vo->x11;
@@ -1888,6 +1887,11 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
                 vo_x11_minimize(vo);
             if (opt == &opts->window_maximized)
                 vo_x11_maximize(vo);
+            if (opt == &opts->geometry || opt == &opts->autofit ||
+                opt == &opts->autofit_smaller || opt == &opts->autofit_larger)
+            {
+                vo_x11_set_geometry(vo);
+            }
         }
         return VO_TRUE;
     }
@@ -1913,6 +1917,10 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
             x11->winrc.x1 = x11->winrc.x0 + w;
             x11->winrc.y1 = x11->winrc.y0 + h;
         }
+        return VO_TRUE;
+    }
+    case VOCTRL_GET_FOCUSED: {
+        *(bool *)arg = x11->has_focus;
         return VO_TRUE;
     }
     case VOCTRL_GET_DISPLAY_NAMES: {
@@ -2013,7 +2021,6 @@ static void xscreensaver_heartbeat(struct vo_x11_state *x11)
         (time - x11->screensaver_time_last) >= 10)
     {
         x11->screensaver_time_last = time;
-        sem_post(&x11->screensaver_sem);
         XResetScreenSaver(x11->display);
     }
 }

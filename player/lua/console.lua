@@ -36,6 +36,8 @@ function detect_platform()
         return 'windows'
     elseif mp.get_property_native('options/macos-force-dedicated-gpu', o) ~= o then
         return 'macos'
+    elseif os.getenv('WAYLAND_DISPLAY') then
+        return 'wayland'
     end
     return 'x11'
 end
@@ -214,8 +216,9 @@ end
 
 -- Show the repl if hidden and replace its contents with 'text'
 -- (script-message-to repl type)
-function show_and_type(text)
+function show_and_type(text, cursor_pos)
     text = text or ''
+    cursor_pos = tonumber(cursor_pos)
 
     -- Save the line currently being edited, just in case
     if line ~= text and line ~= '' and history[#history] ~= line then
@@ -223,7 +226,12 @@ function show_and_type(text)
     end
 
     line = text
-    cursor = line:len() + 1
+    if cursor_pos ~= nil and cursor_pos >= 1
+       and cursor_pos <= line:len() + 1 then
+        cursor = math.floor(cursor_pos)
+    else
+        cursor = line:len() + 1
+    end
     history_pos = #history + 1
     insert_mode = false
     if repl_active then
@@ -603,6 +611,14 @@ function get_clipboard(clip)
         if not res.error then
             return res.stdout
         end
+    elseif platform == 'wayland' then
+        local res = utils.subprocess({
+            args = { 'wl-paste', clip and '-n' or  '-np' },
+            playback_only = false,
+        })
+        if not res.error then
+            return res.stdout
+        end
     elseif platform == 'windows' then
         local res = utils.subprocess({
             args = { 'powershell', '-NoProfile', '-Command', [[& {
@@ -641,7 +657,7 @@ function get_clipboard(clip)
 end
 
 -- Paste text from the window-system's clipboard. 'clip' determines whether the
--- clipboard or the primary selection buffer is used (on X11 only.)
+-- clipboard or the primary selection buffer is used (on X11 and Wayland only.)
 function paste(clip)
     local text = get_clipboard(clip)
     local before_cur = line:sub(1, cursor - 1)
@@ -737,8 +753,8 @@ mp.add_key_binding(nil, 'enable', function()
 end)
 
 -- Add a script-message to show the REPL and fill it with the provided text
-mp.register_script_message('type', function(text)
-    show_and_type(text)
+mp.register_script_message('type', function(text, cursor_pos)
+    show_and_type(text, cursor_pos)
 end)
 
 -- Redraw the REPL when the OSD size changes. This is needed because the

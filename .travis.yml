@@ -1,29 +1,48 @@
 language: c
 
 _macbase:
-  - &macOld
+  - &mac
     os: osx
     compiler: clang
     env:
       - HOMEBREW_NO_AUTO_UPDATE=1
       - HOMEBREW_NO_INSTALL_CLEANUP=1
-  - &macNew
-    <<: *macOld
+    before_cache:
+      - brew cleanup -s
+    cache:
+      directories:
+        - $HOME/Library/Caches/Homebrew
+        - /usr/local/Homebrew
+
+_mingwbase:
+  - &mingw
+    os: linux
     addons:
-      homebrew:
-        packages: ['autoconf', 'automake', 'ffmpeg', 'freetype', 'fribidi',
-                   'libass', 'libtool', 'little-cms2', 'luajit', 'nasm',
-                   'pkg-config', 'python']
-        update: true
+      apt:
+        packages:
+          - 'autoconf'
+          - 'automake'
+          - 'pkg-config'
+          - 'gcc-mingw-w64'
+          - 'gcc-multilib'
+          - 'nasm'
+          - 'yasm'
+    cache:
+      directories:
+        - mingw_prefix/
 
 matrix:
   include:
-    - <<: *macNew
+    - <<: *mac
+      osx_image: xcode12.2
+    - <<: *mac
       osx_image: xcode11.3
-    - <<: *macNew
-      osx_image: xcode10.1
-    - <<: *macOld
-      osx_image: xcode9.2
+    - <<: *mac
+      osx_image: xcode9.4
+      env:
+        - HOMEBREW_NO_AUTO_UPDATE=1
+        - HOMEBREW_NO_INSTALL_CLEANUP=1
+        - CI_HOMEBREW_HASH=7242872d7878f1a4c2706e5837faafcf0782b58d
     - os: freebsd
       compiler: clang
     - os: linux
@@ -32,16 +51,16 @@ matrix:
     - os: linux
       compiler: clang
       env: CONTAINER=registry.cirno.systems/kiwi/containers/mpv-ci:stable-deps CI_SCRIPT=ci/build-tumbleweed.sh
-    - os: linux
-      env: CONTAINER=registry.cirno.systems/kiwi/containers/mpv-ci-mingw64:i686 CI_SCRIPT=ci/build-mingw64.sh TARGET=i686-w64-mingw32
-    - os: linux
-      env: CONTAINER=registry.cirno.systems/kiwi/containers/mpv-ci-mingw64:x86_64 CI_SCRIPT=ci/build-mingw64.sh TARGET=x86_64-w64-mingw32
+    - <<: *mingw
+      env: CI_SCRIPT=ci/build-mingw64.sh TARGET=i686-w64-mingw32
+    - <<: *mingw
+      env: CI_SCRIPT=ci/build-mingw64.sh TARGET=x86_64-w64-mingw32
   allow_failures:
     - os: osx
-      osx_image: xcode9.2
+      osx_image: xcode9.4
   fast_finish: true
 
-dist: bionic
+dist: focal
 services:
   - docker
 
@@ -62,7 +81,7 @@ branches:
 before_install:
   - if [ "$TRAVIS_COMPILER" = "clang" ]; then export CXX="clang++"; fi
   - if [ "$TRAVIS_COMPILER" = "gcc" ]; then export CXX="g++"; fi
-  - if [ "$TRAVIS_OS_NAME" = "linux" ]; then docker pull $CONTAINER; fi
+  - if [ -n "$CONTAINER" ]; then docker pull $CONTAINER; fi
   - |
         if [ "$TRAVIS_OS_NAME" = "freebsd" ]; then
             # Requested in ci/build-freebsd.sh
@@ -99,37 +118,47 @@ before_install:
         fi
   - |
         if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then
-            if [[ "$TRAVIS_OSX_IMAGE" == "xcode9.2" ]]; then
-                brew update
-                pushd "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core"
-                git checkout 55e02323812604add9a69bab8730319b9255a697
-                popd
-                brew install autoconf
-                brew install automake
-                brew install pkg-config
-                brew install libtool
-                brew install python
-                brew install freetype
-                brew install fribidi
-                brew install little-cms2
-                brew install luajit
-                brew install libass
-                brew install ffmpeg
+            if [[ "$TRAVIS_OSX_IMAGE" == "xcode12.2" ]]; then
+                remove=$(brew list --formula)
             else
-                brew link --overwrite python
+                remove=$(brew list)
+            fi
+            keep="gettext pcre2 git"
+            install="autoconf automake pkg-config libtool python freetype fribidi little-cms2 luajit libass ffmpeg"
+            for formula in ${keep[@]}; do remove=("${remove[@]/$formula}"); done
+            for formula in ${install[@]}; do remove=("${remove[@]/$formula}"); done
+            brew remove --force $remove --ignore-dependencies
+            if [[ "$TRAVIS_OSX_IMAGE" == "xcode12.2" ]]; then
+                brew remove $(brew list --cask)
+            else
+                brew cask remove $(brew cask list)
+            fi
+            brew untap homebrew/cask
+            brew update
+            if [[ -n "$CI_HOMEBREW_HASH" ]]; then
+                pushd "/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core"
+                git checkout --force $CI_HOMEBREW_HASH
+            fi
+            brew install $install
+            brew link --overwrite python
+            if [[ -n "$CI_HOMEBREW_HASH" ]]; then
+                git checkout master
+                popd
             fi
         fi
 
-before_cache:
-  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then brew cleanup -s ; fi
 
-cache:
-  directories:
-    - $HOME/Library/Caches/Homebrew
 
 script:
   - ./bootstrap.py
-  - if [ "$TRAVIS_OS_NAME" = "linux" ]; then docker run --env CC --env TARGET -v $TRAVIS_BUILD_DIR:/build $CONTAINER /bin/sh -c "cd /build && $CI_SCRIPT"; fi
+  - |
+        if [ "$TRAVIS_OS_NAME" = "linux" ]; then
+            if [ -n "$CONTAINER" ]; then
+                docker run --env CC --env TARGET -v $TRAVIS_BUILD_DIR:/build $CONTAINER /bin/sh -c "cd /build && $CI_SCRIPT"
+            else
+                $CI_SCRIPT
+            fi
+        fi
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then ./ci/build-macos.sh; fi
   - if [ "$TRAVIS_OS_NAME" = "freebsd" ]; then ./ci/build-freebsd.sh; fi
 after_failure: cat ./build/config.log

@@ -33,6 +33,7 @@
 #include "options/m_property.h"
 #include "common/msg.h"
 #include "common/msg_control.h"
+#include "common/stats.h"
 #include "options/m_option.h"
 #include "input/input.h"
 #include "options/path.h"
@@ -64,6 +65,8 @@ struct script_ctx {
     struct MPContext *mpctx;
     struct mp_log *log;
     char *last_error_str;
+    size_t js_malloc_size;
+    struct stats_ctx *stats;
 };
 
 static struct script_ctx *jctx(js_State *J)
@@ -458,6 +461,25 @@ static int s_init_js(js_State *J, struct script_ctx *ctx)
     return 0;
 }
 
+static void *mp_js_alloc(void *actx, void *ptr, int size_)
+{
+    if (size_ < 0)
+        return NULL;
+
+    struct script_ctx* ctx = actx;
+    size_t size = size_, osize = 0;
+    if (ptr)  // free/realloc
+        osize = ta_get_size(ptr);
+
+    void *ret = talloc_realloc_size(actx, ptr, size);
+
+    if (!size || ret) {  // free / successful realloc/malloc
+        ctx->js_malloc_size = ctx->js_malloc_size - osize + size;
+        stats_size_value(ctx->stats, "mem", ctx->js_malloc_size);
+    }
+    return ret;
+}
+
 /**********************************************************************
  *  Initialization - booting the script
  *********************************************************************/
@@ -479,10 +501,24 @@ static int s_load_javascript(struct mp_script_args *args)
         .last_error_str = talloc_strdup(ctx, "Cannot initialize JavaScript"),
         .filename = args->filename,
         .path = args->path,
+        .js_malloc_size = 0,
+        .stats = stats_ctx_create(ctx, args->mpctx->global,
+                    mp_tprintf(80, "script/%s", mpv_client_name(args->client))),
     };
 
+    stats_register_thread_cputime(ctx->stats, "cpu");
+
+    js_Alloc alloc_fn = NULL;
+    void *actx = NULL;
+
+    char *mem_report = getenv("MPV_LEAK_REPORT");
+    if (mem_report && strcmp(mem_report, "1") == 0) {
+        alloc_fn = mp_js_alloc;
+        actx = ctx;
+    }
+
     int r = -1;
-    js_State *J = js_newstate(NULL, NULL, 0);
+    js_State *J = js_newstate(alloc_fn, actx, 0);
     if (!J || s_init_js(J, ctx))
         goto error_out;
 
@@ -745,16 +781,6 @@ static void push_nums_obj(js_State *J, const char * const names[],
     }
 }
 
-// args: none, return: object with properties x, y
-static void script_get_mouse_pos(js_State *J)
-{
-    int x, y;
-    mp_input_get_mouse_pos(jctx(J)->mpctx->input, &x, &y);
-    const char * const names[] = {"x", "y", NULL};
-    const double vals[] = {x, y};
-    push_nums_obj(J, names, vals);
-}
-
 // args: input-section-name, x0, y0, x1, y1
 static void script_input_set_section_mouse_area(js_State *J)
 {
@@ -936,6 +962,16 @@ static void script_getenv(js_State *J)
         js_pushstring(J, v);
     } else {
         js_pushundefined(J);
+    }
+}
+
+// args: none
+static void script_get_env_list(js_State *J)
+{
+    js_newarray(J);
+    for (int n = 0; environ && environ[n]; n++) {
+        js_pushstring(J, environ[n]);
+        js_setindex(J, -2, n);
     }
 }
 
@@ -1135,7 +1171,6 @@ static const struct fn_entry main_fns[] = {
     FN_ENTRY(get_wakeup_pipe, 0),
     FN_ENTRY(_hook_add, 3),
     FN_ENTRY(_hook_continue, 1),
-    FN_ENTRY(get_mouse_pos, 0),
     FN_ENTRY(input_set_section_mouse_area, 5),
     FN_ENTRY(last_error, 0),
     FN_ENTRY(_set_last_error, 1),
@@ -1149,6 +1184,7 @@ static const struct fn_entry utils_fns[] = {
     AF_ENTRY(join_path, 2),
     AF_ENTRY(get_user_path, 1),
     FN_ENTRY(getpid, 0),
+    FN_ENTRY(get_env_list, 0),
 
     FN_ENTRY(read_file, 2),
     AF_ENTRY(write_file, 2),

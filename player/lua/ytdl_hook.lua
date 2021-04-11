@@ -8,16 +8,18 @@ local o = {
     use_manifests = false,
     all_formats = false,
     force_all_formats = true,
+    ytdl_path = "youtube-dl",
 }
 
 local ytdl = {
-    path = "youtube-dl",
+    path = nil,
     searched = false,
     blacklisted = {}
 }
 
 options.read_options(o, nil, function()
     ytdl.blacklisted = {} -- reparse o.exclude next time
+    ytdl.searched = false
 end)
 
 local chapter_list = {}
@@ -505,7 +507,7 @@ local function add_single_video(json)
 
         if requested_formats then
             for _, track in pairs(requested_formats) do
-                max_bitrate = track.tbr > max_bitrate and
+                max_bitrate = (track.tbr and track.tbr > max_bitrate) and
                     track.tbr or max_bitrate
             end
         elseif json.tbr then
@@ -577,7 +579,13 @@ local function add_single_video(json)
 
     -- add subtitles
     if not (json.requested_subtitles == nil) then
-        for lang, sub_info in pairs(json.requested_subtitles) do
+        local subs = {}
+        for lang, info in pairs(json.requested_subtitles) do
+            subs[#subs + 1] = {lang = lang or "-", info = info}
+        end
+        table.sort(subs, function(a, b) return a.lang < b.lang end)
+        for _, e in ipairs(subs) do
+            local lang, sub_info = e.lang, e.info
             msg.verbose("adding subtitle ["..lang.."]")
 
             local sub = nil
@@ -684,8 +692,11 @@ function run_ytdl_hook(url)
     -- check for youtube-dl in mpv's config dir
     if not (ytdl.searched) then
         local exesuf = (package.config:sub(1,1) == '\\') and '.exe' or ''
-        local ytdl_mcd = mp.find_config_file("youtube-dl" .. exesuf)
-        if not (ytdl_mcd == nil) then
+        local ytdl_mcd = mp.find_config_file(o.ytdl_path .. exesuf)
+        if ytdl_mcd == nil then
+            msg.verbose("No youtube-dl found with path "..o.ytdl_path..exesuf.." in config directories")
+            ytdl.path = o.ytdl_path
+        else
             msg.verbose("found youtube-dl at: " .. ytdl_mcd)
             ytdl.path = ytdl_mcd
         end
@@ -761,7 +772,7 @@ function run_ytdl_hook(url)
         if result.error_string and result.error_string == "init" then
             err = err .. "not found or not enough permissions"
         elseif not result.killed_by_us then
-            err = err .. "unexpected error ocurred"
+            err = err .. "unexpected error occurred"
         else
             err = string.format("%s returned '%d'", err, es)
         end

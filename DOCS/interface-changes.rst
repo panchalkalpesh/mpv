@@ -26,6 +26,17 @@ Interface changes
 
 ::
 
+ --- mpv 0.34.0 ---
+    - add `--screen-name` and `--fs-screen-name` flags to allow selecting the
+      screen by its name instead of the index
+    - add `--macos-geometry-calculation` to change the rectangle used for screen
+      position and size calculation. the old behavior used the whole screen,
+      which didn't take the menu bar and Dock into account. The new default
+      behaviour includes both. To revert to the old behavior set this to
+      `whole`.
+    - add an additional optional `albumart` argument to the `video-add` command,
+      which tells mpv to load the given video as album art.
+    - undeprecate `--cache-secs` option
  --- mpv 0.33.0 ---
     - add `--d3d11-exclusive-fs` flag to enable D3D11 exclusive fullscreen mode
       when the player enters fullscreen.
@@ -60,7 +71,6 @@ Interface changes
       "file_error" instead for this specific event. Scripts relying on the
       "error" field for end-file will silently break at some point in the
       future.
-    - deprecate encoding mode (lack of maintainer)
     - remove deprecated --input-file option, add --input-ipc-client, which is
       vaguely a replacement of the removed option, but not the same
     - change another detail for track selection options (see --aid manpage
@@ -72,6 +82,16 @@ Interface changes
     - remove --video-sync-adrop-size option (implementation was changed, no
       replacement for what this option did)
     - undeprecate --video-sync=display-adrop
+    - deprecate legacy auto profiles (profiles starting with "extension." and
+      "protocol."). Use conditional auto profiles instead.
+    - the "subprocess" command does not connect spawned processes' stdin to
+      mpv's stdin anymore. Instead, stdin is connected to /dev/null by default.
+      To get the old behavior, set the "passthrough_stdin" argument to true.
+    - key/value list options do not accept ":" as item separator anymore,
+      only ",". This means ":" is always considered part of the value.
+    - remove deprecated --vo-vdpau-deint option
+    - add `delete-watch-later-config` command to complement
+      `write-watch-later-config`
  --- mpv 0.32.0 ---
     - change behavior when using legacy option syntax with options that start
       with two dashes (``--`` instead of a ``-``). Now, using the recommended

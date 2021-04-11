@@ -426,6 +426,10 @@ local function append_filters(s, prop, prefix)
             n = n .. " (disabled)"
         end
 
+        if f.label ~= nil then
+            n = "@" .. f.label .. ": " .. n
+        end
+
         local p = {}
         for key,value in pairs(f.params) do
             p[#p+1] = key .. "=" .. value
@@ -545,8 +549,14 @@ local function add_video(s)
         append(s, r["h"], {prefix="x", nl="", indent=" ", prefix_sep=" ", no_prefix_markup=true})
     end
     append_property(s, "current-window-scale", {prefix="Window Scale:"})
-    append(s, format("%.2f", r["aspect"]), {prefix="Aspect Ratio:"})
+    if r["aspect"] ~= nil then
+        append(s, format("%.2f", r["aspect"]), {prefix="Aspect Ratio:"})
+    end
     append(s, r["pixelformat"], {prefix="Pixel Format:"})
+    if r["hw-pixelformat"] ~= nil then
+        append(s, r["hw-pixelformat"], {prefix_sep="[", nl="", indent=" ",
+                suffix="]"})
+    end
 
     -- Group these together to save vertical space
     local prim = append(s, r["primaries"], {prefix="Primaries:"})
@@ -964,8 +974,11 @@ mp.add_key_binding(o.key_toggle, "display-stats-toggle", function() process_key_
 -- Single invocation bindings without key, can be used in input.conf to create
 -- bindings for a specific page: "e script-binding stats/display-page-2"
 for k, _ in pairs(pages) do
-    mp.add_key_binding(nil, "display-page-" .. k, function() process_key_binding(true) end,
-        {repeatable=true})
+    mp.add_key_binding(nil, "display-page-" .. k,
+        function()
+            curr_page = k
+            process_key_binding(true)
+        end, {repeatable=true})
 end
 
 -- Reprint stats immediately when VO was reconfigured, only when toggled

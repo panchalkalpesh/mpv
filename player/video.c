@@ -261,8 +261,11 @@ void reinit_video_chain_src(struct MPContext *mpctx, struct track *track)
         vo_c->dec_src = track->dec->f->pins[0];
         vo_c->filter->container_fps =
             mp_decoder_wrapper_get_container_fps(track->dec);
-        vo_c->is_coverart = !!track->stream->attached_picture;
+        vo_c->is_coverart = !!track->attached_picture;
         vo_c->is_sparse = track->stream->still_image || vo_c->is_coverart;
+
+        if (vo_c->is_coverart)
+            mp_decoder_wrapper_set_coverart_flag(track->dec, true);
 
         track->vo_c = vo_c;
         vo_c->track = track;
@@ -275,11 +278,14 @@ void reinit_video_chain_src(struct MPContext *mpctx, struct track *track)
 
     update_screensaver_state(mpctx);
 
-    vo_set_paused(vo_c->vo, mpctx->paused);
+    vo_set_paused(vo_c->vo, get_internal_paused(mpctx));
 
     // If we switch on video again, ensure audio position matches up.
-    if (mpctx->ao_chain)
+    if (mpctx->ao_chain && mpctx->ao_chain->ao) {
+        ao_reset(mpctx->ao_chain->ao);
+        mpctx->ao_chain->start_pts_known = false;
         mpctx->audio_status = STATUS_SYNCING;
+    }
 
     reset_video_state(mpctx);
     reset_subtitle_state(mpctx);
@@ -1069,7 +1075,6 @@ void write_video(struct MPContext *mpctx)
             if (mpctx->time_frame <= 0 || !has_frame) {
                 MP_VERBOSE(mpctx, "video EOF reached\n");
                 mpctx->video_status = STATUS_EOF;
-                encode_lavc_stream_eof(mpctx->encode_lavc_ctx, STREAM_VIDEO);
             }
         }
 
